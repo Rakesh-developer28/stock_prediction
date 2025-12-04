@@ -18,21 +18,20 @@ def fetch_data():
     """
     print(f"--- Attempting to download stock data for {TICKER} ---")
     try:
-        # **CORRECTION**: Changed period from '1d' to '5y' to get enough data.
+        # Fetch 5 years of daily data to ensure enough training samples
         df = yf.download(TICKER, period='5y', interval='1d') 
         
         if df.empty:
             print(f"ERROR: Stock data for {TICKER} could not be downloaded. Returning empty data.")
             return pd.DataFrame({'Close': []}) 
         
-        # We only need the 'Close' price for this prediction
+        # Use only the 'Close' price
         df = df[['Close']].copy() 
         print(f"Data successfully downloaded. Shape: {df.shape}")
         return df
 
     except Exception as e:
         print(f"An unexpected error occurred during data download: {e}")
-        # Note: If rate-limited, wait 5-10 minutes before trying again.
         return pd.DataFrame({'Close': []}) 
 
 # --- Main Execution ---
@@ -41,7 +40,6 @@ if __name__ == "__main__":
     # 1. Fetch Data
     data_df = fetch_data()
 
-    # Check if enough data was fetched (we need at least PREDICTION_DAYS + 1 for training)
     if data_df.empty or len(data_df) < PREDICTION_DAYS + 1: 
         print(f"Insufficient data ({len(data_df)} samples) to proceed with model training. Requires at least {PREDICTION_DAYS + 1} samples.")
         exit() 
@@ -52,19 +50,16 @@ if __name__ == "__main__":
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(data_df['Close'].values.reshape(-1, 1))
     
-    # Create the training data set
+    # Create the training data set (X_train and y_train)
     x_train = []
     y_train = []
 
     for x in range(PREDICTION_DAYS, len(scaled_data)):
-        # x_train contains the last 60 scaled prices
         x_train.append(scaled_data[x-PREDICTION_DAYS:x, 0])
-        # y_train contains the 61st scaled price (the one to predict)
         y_train.append(scaled_data[x, 0])
     
-    # Convert to numpy arrays and reshape for LSTM
+    # Convert to numpy arrays and reshape for LSTM: [samples, time_steps (60), features (1)]
     x_train, y_train = np.array(x_train), np.array(y_train)
-    # Reshape: [samples, time_steps (60), features (1)]
     x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
     
     print(f"x_train shape: {x_train.shape}")
@@ -74,27 +69,76 @@ if __name__ == "__main__":
     print("--- Building LSTM Model ---")
     model = Sequential()
 
-    # Layer 1: LSTM layer with 50 units, returns sequences for the next LSTM layer
+    # Model Architecture
     model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
-    model.add(Dropout(0.2)) # 20% dropout
-
-    # Layer 2: LSTM layer, does NOT return sequences (final LSTM layer)
+    model.add(Dropout(0.2)) 
     model.add(LSTM(units=50, return_sequences=False))
     model.add(Dropout(0.2))
+    model.add(Dense(units=1)) # Output layer
 
-    # Output Layer: Dense layer for the single price prediction
-    model.add(Dense(units=1)) 
-
-    # Compile the model
+    # Compile and Train
     model.compile(optimizer='adam', loss='mean_squared_error')
     
     print("--- Starting model training (25 epochs) ---")
-    # Train the model
     model.fit(x_train, y_train, epochs=25, batch_size=32) 
     print("--- Model training finished ---")
+
+    # -------------------------------------------------------------
+    # 6. Predict the Next Day's Price (Future Prediction)
+    # -------------------------------------------------------------
+
+    print("--- Predicting Tomorrow's Closing Price ---")
+
+    # Get the last 60 days of closing price data (the input for the prediction)
+    last_60_days = data_df['Close'].values[-PREDICTION_DAYS:]
     
-    # NOTE: To continue this project, you would add sections here for:
-    # 1. Loading Test Data
-    # 2. Making Predictions
-    # 3. Inverse Scaling the Predictions
-    # 4. Plotting the results (Actual vs. Predicted)
+    # Scale the last 60 days of prices using the fitted scaler
+    last_60_days_scaled = scaler.transform(last_60_days.reshape(-1, 1))
+
+    # Prepare the input for the model: reshape to [1, 60, 1]
+    X_test_future = np.array(last_60_days_scaled)
+    X_test_future = np.reshape(X_test_future, (1, X_test_future.shape[0], 1))
+
+    # Make the prediction
+    predicted_price_scaled = model.predict(X_test_future)
+
+    # Inverse transform the scaled prediction to get the actual rupee price
+    predicted_price = scaler.inverse_transform(predicted_price_scaled)
+
+    # Output the result
+    print("---------------------------------------------")
+    print(f"Predicted Closing Price for Tomorrow ({TICKER}): ₹{predicted_price[0][0]:.2f}")
+    print("---------------------------------------------")
+
+    # -------------------------------------------------------------
+    # 5. Model Evaluation and Visualization (Training Performance Plot)
+    # -------------------------------------------------------------
+
+    print("--- Starting Model Evaluation and Visualization ---")
+
+    # Make predictions on the training set
+    predicted_prices_scaled = model.predict(x_train)
+
+    # Inverse transform the scaled predictions to get actual prices
+    predicted_prices = scaler.inverse_transform(predicted_prices_scaled)
+    
+    # Get the actual prices for the training period
+    actual_prices = data_df['Close'].values[PREDICTION_DAYS:]
+    
+    # Create a DataFrame for plotting
+    predictions_df = pd.DataFrame({
+        'Actual': actual_prices.flatten(),
+        'Predicted': predicted_prices.flatten()
+    }, index=data_df.index[PREDICTION_DAYS:])
+
+    # Plot the results
+    plt.figure(figsize=(16, 8))
+    plt.title(f'{TICKER} Stock Price Prediction (Training Data Fit)')
+    plt.plot(predictions_df['Actual'], label='Actual Closing Price', color='blue')
+    plt.plot(predictions_df['Predicted'], label='Predicted Closing Price', color='red')
+    plt.xlabel('Date')
+    plt.ylabel('Price (INR)')
+    plt.legend()
+    plt.show()
+
+    print("--- Visualization complete ---")
