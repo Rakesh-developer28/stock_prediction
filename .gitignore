@@ -1,0 +1,14 @@
+﻿# Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dependencies
+venv/
+.venv/
+
+# Model and Data
+*.h5 # For Keras/TensorFlow model files
+*.pkl
+*.csv
